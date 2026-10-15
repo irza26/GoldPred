@@ -12,17 +12,16 @@ st.set_page_config(
     page_title='XAU/USD Trading Terminal', page_icon='🪙', layout='wide'
 )
 
-# Palet warna (satu tempat, dipakai CSS dan Plotly)
-INK = '#14161c'  # latar utama
-SURFACE = '#1b1e26'  # kartu
-SURFACE_2 = '#222631'  # kartu bersarang / hover
-LINE = '#2c313d'  # garis tipis
-TEXT = '#ece8df'  # teks utama (putih hangat)
-MUTED = '#9aa0ad'  # teks sekunder
-GOLD = '#d9b45a'  # aksen emas
-BUY = '#6fcf97'  # hijau lembut
-SELL = '#ef8a80'  # koral lembut
-BAND = '#7aa2f7'  # biru pita risiko
+INK = '#14161c'
+SURFACE = '#1b1e26'
+SURFACE_2 = '#222631'
+LINE = '#2c313d'
+TEXT = '#ece8df'
+MUTED = '#9aa0ad'
+GOLD = '#d9b45a'
+BUY = '#6fcf97'
+SELL = '#ef8a80'
+BAND = '#7aa2f7'
 
 CSS = """
 <style>
@@ -129,7 +128,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 
 # ──────────────────────────────────────────────────────────────
-# Engine & data
+# Engine & data (DI-OPTIMASI UNTUK HEMAT RAM)
 # ──────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_engine():
@@ -141,7 +140,10 @@ def load_engine():
 @st.cache_data
 def load_data():
     path = 'data/XAUUSD_2021_2026_1min_master.parquet'
-    df = pd.read_parquet(path)
+    # BACA KOLOM PENTING SAJA UNTUK MENCEGAH STACK OVERFLOW / CRASH
+    df = pd.read_parquet(
+        path, columns=['open', 'high', 'low', 'close', 'spread_mean']
+    )
     return df
 
 
@@ -163,7 +165,6 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
-# Opsi Toggle Mode Tampilan
 app_mode = st.sidebar.radio(
     'Mode Tampilan:',
     options=[
@@ -173,11 +174,14 @@ app_mode = st.sidebar.radio(
     index=0,
 )
 
-available_dates = df_m1.index[120 + 100 : -60]
+# AMBIL SAMPEL WAKTU AGAR SLIDER SMOOTH
+step_sample = 5
+available_dates = df_m1.index[120 + 100 : -60 : step_sample]
+
 selected_timestamp = st.sidebar.select_slider(
     'Waktu candle (t0)',
     options=available_dates,
-    value=available_dates[-500],
+    value=available_dates[-100],
     format_func=lambda ts: ts.strftime('%d %b %Y, %H:%M'),
 )
 
@@ -195,7 +199,6 @@ is_signal = res['is_high_conf']
 is_buy = res['signal'] == 'BUY'
 accent = (BUY if is_buy else SELL) if is_signal else GOLD
 
-# Hitung ATR Lokal untuk Metrik UI
 atr_value = float(np.mean(df_slice['high'].values - df_slice['low'].values))
 
 # ──────────────────────────────────────────────────────────────
@@ -210,7 +213,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Ringkasan singkat dalam bahasa sehari-hari
 final_pred = float(res['pred_path'][-1])
 delta = final_pred - float(res['anchor_price'])
 if is_signal:
@@ -292,7 +294,7 @@ with col4:
 st.write('')
 
 # ──────────────────────────────────────────────────────────────
-# Grafik
+# Grafik (LIGHTWEIGHT RENDER)
 # ──────────────────────────────────────────────────────────────
 future_times = df_future.index
 fig = go.Figure()
@@ -322,7 +324,7 @@ fig.add_trace(
     )
 )
 
-# 3. Harga yang benar-benar terjadi (Tampil jika Mode Simulator)
+# 3. Harga aktual (Mode Simulator)
 if app_mode.startswith('Simulator'):
     fig.add_trace(
         go.Scatter(
@@ -426,7 +428,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Offsets mapping untuk M1: +5m, +10m, +15m, +30m, +45m, +60m
 horizon_mapping = [
     ('+5m', 0),
     ('+10m', 1),
