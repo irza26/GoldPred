@@ -1,7 +1,7 @@
 import os
 import numpy as np
-import plotly.graph_objects as go
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from src.inference_engine import XAUUSDInferenceEngine
 
@@ -134,7 +134,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 @st.cache_resource
 def load_engine():
     return XAUUSDInferenceEngine(
-        model_path='models/xauusd_m5_multihorizon_engine_2026.joblib'
+        model_name='xauusd_hybrid_m1_engine.joblib'
     )
 
 
@@ -142,16 +142,12 @@ def load_engine():
 def load_data():
     path = 'data/XAUUSD_2021_2026_1min_master.parquet'
     df = pd.read_parquet(path)
-    return (
-        df.resample('5min')
-        .agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'})
-        .dropna()
-    )
+    return df
 
 
 try:
     engine = load_engine()
-    df_5m = load_data()
+    df_m1 = load_data()
 except Exception as e:
     st.error(f'System Initialization Error: {e}')
     st.stop()
@@ -163,7 +159,7 @@ except Exception as e:
 st.sidebar.markdown(
     '<div class="side-title">Simulator historis</div>'
     '<div class="side-note">Pilih satu candle sebagai titik awal (t0). '
-    'Model akan memprediksi 12 candle M5 berikutnya.</div>',
+    'Model akan memprediksi 12 offset M1 berikutnya.</div>',
     unsafe_allow_html=True,
 )
 
@@ -177,7 +173,7 @@ app_mode = st.sidebar.radio(
     index=0,
 )
 
-available_dates = df_5m.index[engine.lookback + 100 : -12]
+available_dates = df_m1.index[120 + 100 : -60]
 selected_timestamp = st.sidebar.select_slider(
     'Waktu candle (t0)',
     options=available_dates,
@@ -188,16 +184,19 @@ selected_timestamp = st.sidebar.select_slider(
 # ──────────────────────────────────────────────────────────────
 # Inferensi
 # ──────────────────────────────────────────────────────────────
-c_idx = df_5m.index.get_loc(selected_timestamp)
-df_slice = df_5m.iloc[c_idx - engine.lookback + 1 : c_idx + 1]
+c_idx = df_m1.index.get_loc(selected_timestamp)
+df_slice = df_m1.iloc[c_idx - 119 : c_idx + 1]
 res = engine.predict(df_slice)
 
-df_future = df_5m.iloc[c_idx + 1 : c_idx + 13]
+df_future = df_m1.iloc[c_idx + 1 : c_idx + 13]
 actual_prices = df_future['close'].values
 
-is_signal = bool(res['is_high_confidence'])
-is_buy = res['direction'] == 'BUY'
+is_signal = res['is_high_conf']
+is_buy = res['signal'] == 'BUY'
 accent = (BUY if is_buy else SELL) if is_signal else GOLD
+
+# Hitung ATR Lokal untuk Metrik UI
+atr_value = float(np.mean(df_slice['high'].values - df_slice['low'].values))
 
 # ──────────────────────────────────────────────────────────────
 # Header
@@ -212,13 +211,13 @@ st.markdown(
 )
 
 # Ringkasan singkat dalam bahasa sehari-hari
-final_pred = float(np.asarray(res['full_traj'])[-1])
-delta = final_pred - float(res['anchor_p0'])
+final_pred = float(res['pred_path'][-1])
+delta = final_pred - float(res['anchor_price'])
 if is_signal:
     verb = 'beli' if is_buy else 'jual'
     summary_html = (
         f'Model melihat peluang <b>{verb}</b> dengan keyakinan '
-        f"<b>{res['confidence_pct']:.1f}%</b>. Dari ${res['anchor_p0']:.2f}, "
+        f"<b>{res['confidence_pct']:.1f}%</b>. Dari ${res['anchor_price']:.2f}, "
         f'harga diperkirakan bergerak ke sekitar <b>${final_pred:.2f}</b> '
         f'({delta:+.2f}) dalam satu jam.'
         f'<span class="hint">Selalu cek rentang risiko di grafik sebelum mengambil keputusan.</span>'
@@ -244,7 +243,7 @@ with col1:
     st.markdown(
         f"""<div class="metric-card">
 <div class="metric-label">Harga acuan (t0)</div>
-<div class="metric-value">${res['anchor_p0']:.2f}</div>
+<div class="metric-value">${res['anchor_price']:.2f}</div>
 <div class="metric-sub">Penutupan candle terakhir</div>
 </div>""",
         unsafe_allow_html=True,
@@ -254,7 +253,7 @@ with col2:
     st.markdown(
         f"""<div class="metric-card">
 <div class="metric-label">Volatilitas (ATR)</div>
-<div class="metric-value">${res['atr']:.2f}</div>
+<div class="metric-value">${atr_value:.2f}</div>
 <div class="metric-sub">Rata-rata pergerakan per candle</div>
 </div>""",
         unsafe_allow_html=True,
@@ -274,7 +273,7 @@ with col4:
     if is_signal:
         badge_class = 'buy-badge' if is_buy else 'sell-badge'
         status_html = (
-            f'<span class="badge {badge_class}">Sinyal {res["direction"]}</span>'
+            f'<span class="badge {badge_class}">Sinyal {res["signal"]}</span>'
         )
         status_sub = 'Keyakinan melewati ambang batas'
     else:
@@ -302,7 +301,7 @@ fig = go.Figure()
 fig.add_trace(
     go.Scatter(
         x=list(future_times) + list(future_times)[::-1],
-        y=list(res['full_q90']) + list(res['full_q10'])[::-1],
+        y=list(res['q90_path']) + list(res['q10_path'])[::-1],
         fill='toself',
         fillcolor='rgba(122, 162, 247, 0.14)',
         line=dict(color='rgba(255,255,255,0)'),
@@ -317,7 +316,7 @@ fig.add_trace(
         x=df_slice.index,
         y=df_slice['close'],
         mode='lines',
-        name='Riwayat (M5)',
+        name='Riwayat (M1)',
         line=dict(color=MUTED, width=1.6),
         hovertemplate='$%{y:.2f}<extra>Riwayat</extra>',
     )
@@ -337,14 +336,14 @@ if app_mode.startswith('Simulator'):
         )
     )
 
-# 4. Proyeksi gelombang model (KNN Hybrid)
+# 4. Proyeksi gelombang model
 line_color = BUY if is_buy else SELL
 fig.add_trace(
     go.Scatter(
         x=future_times,
-        y=res['full_traj'],
+        y=res['pred_path'],
         mode='lines+markers',
-        name='Proyeksi model (KNN Wave)',
+        name='Proyeksi model (M1 Hybrid)',
         line=dict(color=line_color, width=2.8),
         marker=dict(size=7, color=line_color, line=dict(color=SURFACE, width=1.5)),
         hovertemplate='$%{y:.2f}<extra>Proyeksi</extra>',
@@ -404,7 +403,7 @@ fig.update_layout(
 
 with st.container(border=True):
     sub_title_txt = (
-        'Garis berwarna adalah prediksi gelombang KNN model, garis putus-putus'
+        'Garis berwarna adalah prediksi gelombang M1 model, garis putus-putus'
         ' putih adalah harga yang benar-benar terjadi.'
         if app_mode.startswith('Simulator')
         else 'Garis berwarna adalah proyeksi gelombang pergerakan harga model.'
@@ -427,20 +426,33 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-steps_indices = [0, 0, 1, 2, 5, 11]
+# Offsets mapping untuk M1: +5m, +10m, +15m, +30m, +45m, +60m
+horizon_mapping = [
+    ('+5m', 0),
+    ('+10m', 1),
+    ('+15m', 2),
+    ('+30m', 5),
+    ('+45m', 8),
+    ('+60m', 11)
+]
+
 rows_html = ''
 
-for idx, (h_label, data) in enumerate(res['projections'].items()):
+for h_label, h_idx in horizon_mapping:
+    pred_val = res['pred_path'][h_idx]
+    q10_val = res['q10_path'][h_idx]
+    q90_val = res['q90_path'][h_idx]
+
     if app_mode.startswith('Simulator'):
         act_val = (
-            actual_prices[steps_indices[idx]]
-            if steps_indices[idx] < len(actual_prices)
+            actual_prices[h_idx]
+            if h_idx < len(actual_prices)
             else np.nan
         )
         if np.isnan(act_val):
             actual_txt, err_txt, err_cls = 'N/A', 'N/A', 'na'
         else:
-            err = act_val - data['pred']
+            err = act_val - pred_val
             actual_txt = f'${act_val:.2f}'
             err_txt = f'${err:+.2f}'
             err_cls = 'pos' if err >= 0 else 'neg'
@@ -449,9 +461,9 @@ for idx, (h_label, data) in enumerate(res['projections'].items()):
 
     rows_html += (
         f'<tr><td>{h_label}</td>'
-        f'<td class="expected">${data["pred"]:.2f}</td>'
-        f'<td class="low">${data["q10"]:.2f}</td>'
-        f'<td class="high">${data["q90"]:.2f}</td>'
+        f'<td class="expected">${pred_val:.2f}</td>'
+        f'<td class="low">${q10_val:.2f}</td>'
+        f'<td class="high">${q90_val:.2f}</td>'
         f'<td>{actual_txt}</td>'
         f'<td class="{err_cls}">{err_txt}</td></tr>'
     )
@@ -460,7 +472,7 @@ st.markdown(
     '<div class="table-wrap"><table class="proj"><thead><tr>'
     '<th>Horizon</th><th>Perkiraan (USD)</th><th>Batas bawah (Q10)</th>'
     '<th>Batas atas (Q90)</th><th>Harga aktual</th><th>Selisih ($)</th>'
-    f'</tr></thead><tbody>{rows_html}</tbody></table></div>'
+    '</tr></thead><tbody>' + rows_html + '</tbody></table></div>'
     '<div class="foot-note">Selisih = harga aktual dikurangi perkiraan model. '
     'Nilai positif berarti pasar berakhir lebih tinggi dari prediksi.</div>',
     unsafe_allow_html=True,
